@@ -1,0 +1,29 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# 数据库
+*.db
+
+# 测试脚本（不上传学习过程的文件）
+a.py
+b.py
+c.py
+chat.py
+translate.py
+prompt_test.py
+fewshot.py
+json_output.py
+rag_test.py
+rag_test2.py
+test.py
+api.py
+doc_qa.py
