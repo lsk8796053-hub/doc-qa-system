@@ -10,16 +10,24 @@
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 import chromadb
-import anthropic
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+import os
+from openai import OpenAI
 
 # ========== 初始化 ==========
 app = FastAPI(title="文档问答系统", description="基于 RAG 的文档问答 API")
 
 # 向量数据库客户端（存储切分后的文档）
-db_client = chromadb.Client()
+db_client = chromadb.PersistentClient(path="chroma_db")  
+
+ef = SentenceTransformerEmbeddingFunction(model_name="BAAI/bge-small-zh-v1.5")  # 文本向量化模型
 
 # AI 客户端（调用大模型回答问题）
-ai_client = anthropic.Anthropic()
+ai_client = OpenAI(
+    api_key=os.environ["GPT_RELAY_KEY"],
+    base_url=os.environ["GPT_RELAY_URL"],
+    timeout=30
+)
 
 
 # ========== 数据模型 ==========
@@ -47,13 +55,23 @@ async def upload(file: UploadFile = File(...)):
     content = content.replace("\r\n", "\n")
     chunks = content.split("\n\n")
     chunks = [c.strip() for c in chunks if c.strip()]
+    # 把短标题合并到下一段
+    merged = []
+    buffer = ""
+    for c in chunks:
+        if len(c) < 15 and "。" not in c:   # 判断为标题
+            buffer = c + "\n"
+        else:
+            merged.append(buffer + c)
+            buffer = ""
+    chunks = merged
     
     # 清空旧数据，重建集合
     try:
         db_client.delete_collection("my_docs")
-    except:
-        pass
-    new_collection = db_client.create_collection("my_docs")
+    except Exception as e:
+        print("删除集合失败:", type(e).__name__, e)
+    new_collection = db_client.create_collection("my_docs", embedding_function=ef)
     
     # 存入向量数据库，每段分配一个唯一 ID
     new_collection.add(
@@ -79,22 +97,36 @@ def ask(q: Question):
     3. AI 根据上下文回答问题
     """
     # 获取向量数据库集合
-    collection = db_client.get_or_create_collection("my_docs")
+    collection = db_client.get_or_create_collection("my_docs", embedding_function=ef)
     
     # 搜索最相关的 2 段
     results = collection.query(
         query_texts=[q.text],
         n_results=2
     )
+    print(results["distances"])
     relevant_chunks = results["documents"][0]
+    
+    THRESHOLD = 0.45
+    docs = results["documents"][0]
+    dists = results["distances"][0]
+    relevant_chunks = [d for d, dist in zip(docs, dists) if dist < THRESHOLD]
+
+# 一段都不相关时，直接返回，不调用大模型
+    if not relevant_chunks:
+        return {
+        "question": q.text,
+        "answer": "文档中没有找到相关内容。",
+        "sources": []
+    }
     
     # 拼接为上下文
     context = "\n\n".join(relevant_chunks)
     
     # 调用 AI 回答
-    response = ai_client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=300,
+    response = ai_client.chat.completions.create(
+        model="gpt-6.1-sol",
+        max_completion_tokens=300,
         messages=[{
             "role": "user",
             "content": f"""根据下面的文档回答问题，不要编造文档以外的内容，不要使用任何Markdown格式。
@@ -108,6 +140,7 @@ def ask(q: Question):
     
     return {
         "question": q.text,
-        "answer": response.content[0].text,
+        "answer": response.choices[0].message.content,
         "sources": relevant_chunks
     }
+
