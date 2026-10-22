@@ -1,96 +1,64 @@
-# 📚 文档问答助手
+# 文档问答系统（RAG + Agent）
 
-一个基于 RAG（检索增强生成）的文档问答系统。用户上传文档后，可以用自然语言提问，系统基于文档内容智能回答，并标注答案来源。
+上传文本文档后，用自然语言提问，系统从文档中检索相关段落，再由大模型基于这些段落回答，并展示答案的来源段落。在此基础上扩展了 Agent 功能，并用 LangChain 重构了检索问答流程。
 
-## ✨ 功能特点
+## 功能
 
-- 📄 **文档上传**：支持上传任意 txt 格式文档
-- 🔍 **语义搜索**：基于向量数据库的语义检索，不只是关键词匹配
-- 🤖 **智能问答**：调用 Claude 大模型根据文档内容生成准确回答
-- 📌 **来源追溯**：每个回答都标注依据的原文段落
-- 💬 **多轮对话**：保留聊天历史，支持连续提问
-- 🚫 **拒绝幻觉**：文档里没有的内容会诚实回答"无法回答"
+- **文档入库**：上传 txt 文件，按段落切分，并把短标题合并到下一段正文开头；用中文 Embedding 模型 BGE-small-zh 向量化后存入 ChromaDB。
+- **检索问答**：问题向量化后检索最相似的段落，按相似度阈值过滤掉无关内容；没有相关内容时直接返回“未找到”，不调用大模型。
+- **控制幻觉**：在 Prompt 中要求模型只根据检索到的内容回答，并返回来源段落，方便核对。
+- **Agent**：基于 Function Calling，把文档检索（`search_docs`）和时间查询（`get_time`）封装成工具，由模型自主决定是否调用、调用哪个；支持一次并行调用多个工具，并设置最大步数防止无限循环。
+- **LangChain 版本**：用 LangChain 的切分器、向量库、检索器、Prompt 模板和 LCEL 链式写法重写了同一套流程。
 
-## 🛠 技术栈
+## 技术栈
 
-- **后端**：Python 3.13 + FastAPI
-- **前端**：Streamlit
-- **向量数据库**：ChromaDB
-- **大模型**：Claude (Anthropic API)
+Python、FastAPI、Streamlit、ChromaDB、sentence-transformers（BGE-small-zh）、OpenAI 兼容 API、LangChain
 
-## 📁 项目结构
-├── doc_api.py       # FastAPI 后端：文档处理 + 问答接口
-├── web.py           # Streamlit 前端：用户交互界面
-├── test_doc.txt     # 测试用文档
-└── README.md        # 说明文档
+## 项目结构
 
+| 文件 | 说明 |
+|---|---|
+| `doc_api.py` | 后端：`/upload` 文档入库，`/ask` 检索问答 |
+| `web.py` | 前端：Streamlit 聊天界面 |
+| `agent.py` | Agent 版本：模型自主调用检索和时间工具 |
+| `lc_rag.py` | LangChain 重构版本（单脚本，不含前后端） |
+| `requirements.txt` | 依赖列表 |
 
-## 🚀 快速开始
-
-### 1. 安装依赖
+## 运行方法
 
 ```bash
-pip install fastapi uvicorn streamlit chromadb anthropic python-multipart requests
-```
+# 1. 创建并激活虚拟环境
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 
-### 2. 配置 API Key
+# 2. 安装依赖
+pip install -r requirements.txt
 
-设置环境变量：
-```bash
-setx ANTHROPIC_AUTH_TOKEN "your-api-key"
-setx ANTHROPIC_BASE_URL "your-api-endpoint"
-```
+# 3. 设置环境变量（OpenAI 兼容接口的 key 和地址）
+export GPT_RELAY_KEY="你的 key"
+export GPT_RELAY_URL="接口地址"
 
-### 3. 启动后端
-
-```bash
-python -m uvicorn doc_api:app --reload
-```
-
-后端会运行在 `http://127.0.0.1:8000`
-
-### 4. 启动前端
-
-新开一个终端：
-```bash
+# 4. 启动后端和前端（两个终端）
+python -m uvicorn doc_api:app --port 8000
 python -m streamlit run web.py
+
+# 5. 其他版本
+python agent.py      # Agent 版（需先通过前端上传过文档）
+python lc_rag.py     # LangChain 版（读取同目录下的 test_doc.txt）
 ```
 
-前端会自动打开浏览器，访问 `http://localhost:8501`
+模型名称在代码中设置，可按所用接口自行修改。
 
-## 💡 使用方法
+## 开发中遇到的问题
 
-1. 在前端界面上传 txt 文档
-2. 点击"上传到系统"按钮
-3. 在底部输入框提问
-4. 查看回答和原文来源
+1. **中文检索排序错误**：ChromaDB 默认的 Embedding 模型以英文为主，问“请假流程”时，排在第一的却是“报销流程”。查看返回的来源段落后确认是检索出了问题，改用中文模型 BGE-small-zh 后排序恢复正确。
+2. **标题被单独切成一段**：按空行切分时，标题会单独成段。检索只取两段，标题段排名靠前却没有实际信息，浪费了一个名额。加入合并逻辑后，每段都是“标题 + 正文”。
+3. **固定 top-k 会凑数**：即使排序正确，top-k 也一定会返回 k 段，不相关的内容会被拿来凑数。打印检索距离后发现，相关段约为 0.31，无关段在 0.5 以上，于是设定阈值 0.45 进行过滤。
+4. **通用切分器不理解文档结构**：LangChain 的 RecursiveCharacterTextSplitter 按长度贪心合并，会把下一节的标题拼到上一段末尾。说明切分最好结合文档自身的结构，例如 Markdown 标题。
 
-## 🏗 系统架构
-用户 → Streamlit 前端 → FastAPI 后端 → ChromaDB (语义检索)
-↓
-Claude API (生成回答)
+## 不足与改进方向
 
-## 📝 核心流程
-
-**文档处理流程：**
-1. 读取上传的文本文件
-2. 按空行切分为段落
-3. 存入 ChromaDB 向量数据库（自动生成 embedding）
-
-**问答流程：**
-1. 用户输入问题
-2. 向量搜索最相关的 2 个段落
-3. 将段落作为上下文，连同问题发送给 Claude
-4. 返回答案 + 来源段落
-
-## 🔧 可优化方向
-
-- [ ] 支持 PDF 格式上传
-- [ ] 更智能的文档切分（按语义而非空行）
-- [ ] 流式输出回答（打字机效果）
-- [ ] 多文档支持
-- [ ] 用户账户系统
-
-## 📄 License
-
-MIT
+- 目前每次上传会清空旧数据，只支持单个 txt 文档；可以为每段增加来源文件等元数据，支持多文档管理和按文件更新。
+- 标题判断依赖字数等规则，容易误判；可以改用 Markdown、Word 等文档自带的标题结构切分。
+- 阈值只用少量问题测定；应准备测试集，分别评估检索命中率和回答质量。
+- 可以尝试混合检索（向量 + 关键词）和重排序（rerank）来进一步提升检索效果。
