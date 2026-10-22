@@ -75,6 +75,7 @@ if question:
                 f"{API_URL}/ask",
                 json={"text": question}
             )
+          
             result = response.json()
         
         st.write(result["answer"])
